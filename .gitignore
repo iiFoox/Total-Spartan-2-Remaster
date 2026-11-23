@@ -1,0 +1,32 @@
+# Build & binaries
+build/
+*.exe
+*.dll
+*.lib
+*.a
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+
+# Proprietary game data (NEVER commit ISO/PAK/saves)
+games/
+outputs/
+*.iso
+*.ISO
+*.pak
+*.PAK
+*.ps2
+*.state
+*.inputs
+*.wav
+*.ppm
+*.rgba
+*.dds
+*.DDS
+third_party/wgpu-native/
+third_party/dxc/
+tools/portable/
+logs/
+*.log
