@@ -23,13 +23,13 @@ namespace {
 constexpr int kIdIcon = 1;
 constexpr int kIdBanner = 101;
 
-constexpr int kClientW = 980, kClientH = 760;
-constexpr int kBannerH = 230;
-constexpr int kCardTop = 248, kCardHeader = 40, kRowH = 60, kRows = 6;
+constexpr int kClientW = 980, kClientH = 796;
+constexpr int kBannerH = 226;
+constexpr int kCardTop = 242, kCardHeader = 38, kRowH = 56, kRows = 7;
 constexpr int kCardBottom = kCardTop + kCardHeader + kRows * kRowH + 8;
 constexpr int kMargin = 24;
 constexpr int kCardW = (kClientW - 3 * kMargin) / 2;
-constexpr int kButtonsTop = kCardBottom + 18, kButtonH = 48;
+constexpr int kButtonsTop = kCardBottom + 16, kButtonH = 46;
 
 constexpr COLORREF kBg        = RGB(13, 14, 18);
 constexpr COLORREF kCard      = RGB(22, 24, 30);
@@ -56,8 +56,8 @@ struct Option {
     int value = 0;
 };
 
-enum OptionId { kOptScale, kOptWindow, kOptMode, kOptAspect, kOptBackend, kOptVolume,
-                kOptColor, kOptFilter, kOptEdges, kOptHud, kOptTextures, kOptReverb };
+enum OptionId { kOptScale, kOptWindow, kOptMode, kOptAspect, kOptCutsceneBars, kOptBackend, kOptVolume,
+                kOptColor, kOptFilter, kOptEdges, kOptScreenFx, kOptHud, kOptTextures, kOptReverb };
 
 enum Button { kBtnNone = -1, kBtnControls = 0, kBtnSaves = 1, kBtnPlay = 2 };
 
@@ -86,25 +86,32 @@ std::vector<Option> make_options() {
         {L"Fullscreen", L"MODO DE TELA", {L"Tela cheia", L"Janela"},
          {L"Começa em tela cheia (F11 alterna durante o jogo).", L"Começa em janela (F11 alterna durante o jogo)."}, 0, 0, 2},
         {L"Widescreen", L"PROPORÇÃO", {L"4:3 original", L"16:9 real"},
-         {L"Imagem original do PS2, com faixas laterais.", L"Campo de visão ampliado de verdade (patch de câmera), sem esticar os personagens."}, 1, 0, 3},
+         {L"Imagem original do PS2, com faixas laterais.", L"Campo de visão 16:9 real sem bugs nas bordas nem nos quadrados da direita."}, 1, 0, 3},
+        {L"CutsceneBars", L"CUTSCENES 16:9", {L"Cinema Limpo", L"Tela Cheia"},
+         {L"Barras pretas cinematográficas alinhadas de ponta a ponta em 16:9 (sem cantos abertos).",
+          L"Remove as tarjas pretas nas cutscenes para aproveitar os 16:9 inteiros (recomendado)."}, 1, 0, 4},
         {L"Backend", L"RENDERIZADOR", {L"Direct3D 12", L"Vulkan"},
-         {L"Recomendado no Windows (compilador DXC).", L"Alternativa caso o Direct3D 12 dê problema no seu driver."}, 0, 0, 4},
+         {L"Recomendado no Windows (compilador DXC).", L"Alternativa caso o Direct3D 12 dê problema no seu driver."}, 0, 0, 5},
         {L"Volume", L"VOLUME", {L"Mudo", L"25%", L"50%", L"75%", L"100%"},
-         {L"Sem som.", L"Volume geral em 25%.", L"Volume geral em 50%.", L"Volume geral em 75%.", L"Volume original do jogo."}, 4, 0, 5},
-        {L"Color", L"CORES", {L"Original", L"Leve", L"Remaster", L"Vivas"},
-         {L"Cores exatamente como no PS2.", L"Um pouco mais de contraste e cor.", L"Tira o aspecto lavado do PS2: pretos profundos, cores ricas (recomendado).",
-          L"Contraste e saturação fortes."}, 2, 1, 0},
+         {L"Sem som.", L"Volume geral em 25%.", L"Volume geral em 50%.", L"Volume geral em 75%.", L"Volume original do jogo."}, 4, 0, 6},
+
+        {L"Color", L"CORES", {L"Original", L"Leve", L"Remaster", L"Vivas", L"2.0 ACES"},
+         {L"Cores exatamente como no PS2.", L"Um pouco mais de contraste e cor.", L"Contraste rico e pretos profundos.",
+          L"Contraste e saturação fortes.", L"Remaster 2.0: tone mapping ACES Filmic com brilho bronze/ouro (recomendado)."}, 4, 1, 0},
         {L"Filter", L"FILTRO DE IMAGEM", {L"Nítido", L"Suave", L"Pixel"},
          {L"Ampliação bicúbica + nitidez adaptativa (CAS) (recomendado).", L"Mistura suave, parecida com uma TV.", L"Pixels duros, como um emulador sem filtro."}, 0, 1, 1},
         {L"Edges", L"SUAVIZAR SERRILHADO", {L"Ligado", L"Desligado"},
          {L"Suaviza as bordas em escada na tela final.", L"Sem suavização de bordas."}, 0, 1, 2},
+        {L"ScreenFx", L"CINEMA E BORDAS", {L"Padrão", L"Vinheta + Crop", L"Só Crop"},
+         {L"Sem vinheta nem corte de bordas.", L"Vinheta cinematográfica sutil + corte de 1px/4px de ruído de borda do PS2 (recomendado).",
+          L"Apenas remove as linhas de overscan nas bordas do PS2."}, 1, 1, 3},
         {L"Sharp2D", L"HUD E LEGENDAS", {L"Mais nítido", L"Nítido", L"Suave"},
-         {L"Textos e ícones 2D com o máximo de nitidez (recomendado).", L"Textos e ícones nítidos.", L"Textos e ícones com filtro suave."}, 0, 1, 3},
-        {L"Textures", L"TEXTURAS HD (EL JEFE 4×)", {L"Fiéis", L"Pack puro", L"Desligadas"},
-         {L"Detalhe 4× do pack El Jefe sobre as cores originais do jogo (recomendado).",
-          L"O pack como foi pintado pela IA: mais detalhe, mas muda cores e alguns desenhos.", L"Texturas originais do disco."}, 0, 1, 4},
+         {L"Textos e ícones 2D com o máximo de nitidez (recomendado).", L"Textos e ícones nítidos.", L"Textos e ícones com filtro suave."}, 0, 1, 4},
+        {L"Textures", L"TEXTURAS HD 4×", {L"Remaster 2.0", L"Pack puro", L"Desligadas"},
+         {L"Artes/Menus/HUD redesenhados 2.0 + detalhes 4× fiéis do El Jefe (recomendado).",
+          L"Artes 2.0 + pack El Jefe como pintado pela IA.", L"Apenas texturas originais do disco."}, 0, 1, 5},
         {L"Reverb", L"REVERBERAÇÃO", {L"Ligada", L"Desligada"},
-         {L"Eco de ambiente do chip de som do PS2, como no console.", L"Som seco, sem eco de ambiente."}, 0, 1, 5},
+         {L"Eco de ambiente do chip de som do PS2, como no console.", L"Som seco, sem eco de ambiente."}, 0, 1, 6},
     };
 }
 
@@ -163,8 +170,11 @@ void apply_and_start(State &s) {
     set_env_int(L"PS2_SPU2_KON_LATE", 1);
     set_env_int(L"PS2_RECORD", 0);  // no pad recording (a developer aid that keeps a memory card copy per session in saves/states)
     set_env_str(L"PS2_GPU_BACKEND", o[kOptBackend].value == 1 ? L"vulkan" : L"dx12");
-    set_env_str(L"PS2_WINDOW_TITLE", L"Spartan: Total Warrior");
+    set_env_str(L"PS2_WINDOW_TITLE", L"Total Spartan 2 — Remaster 2.0");
     set_env_int(L"PS2_COLOR", o[kOptColor].value);
+    set_env_str(L"PS2_CUTSCENE_BARS", o[kOptCutsceneBars].value == 1 ? L"off" : L"full");
+    set_env_int(L"PS2_VIGNETTE", o[kOptScreenFx].value == 1 ? 1 : 0);
+    set_env_int(L"PS2_OVERSCAN_CROP", o[kOptScreenFx].value >= 1 ? 1 : 0);
     // the window's picture looks (keymap.cpp): 4 sharp, 2 soft, 0 crisp, +1 with edge smoothing
     static constexpr int kLooks[3] = {4, 2, 0};
     set_env_int(L"PS2_LOOK", kLooks[o[kOptFilter].value] + (o[kOptEdges].value == 0 ? 1 : 0));
@@ -173,8 +183,6 @@ void apply_and_start(State &s) {
     set_env_str(L"PS2_SPU2_REVERB", o[kOptReverb].value == 0 ? nullptr : L"0");
 
     const std::array<std::pair<int, int>, 5> sizes{{{0, 0}, {1280, 720}, {1920, 1080}, {2560, 1440}, {3840, 2160}}};
-    // a window bigger than the screen (1440p on a 1440p monitor at 125 % scaling) is shrunk by Windows into a speckled picture: such a
-    // size falls back to the monitor's own
     const bool fits = res > 0 && res < static_cast<int>(sizes.size()) && sizes[res].first <= GetSystemMetrics(SM_CXSCREEN) &&
                       sizes[res].second <= GetSystemMetrics(SM_CYSCREEN);
     if (fits) {
@@ -185,10 +193,12 @@ void apply_and_start(State &s) {
         set_env_str(L"PS2_WINDOW_HEIGHT", nullptr);
     }
 
-    // the El Jefe pack, read the way PCSX2 names it (gpu.cpp PS2_TEX_PACK): on the game's colours, or as painted
+    // Remaster 2.0 layered texture packs: base El Jefe 4x + custom redesigned Remaster 2.0 art/UI/HUD overrides on top!
     const fs::path pack = s.folder / "textures" / "eljefe";
+    const fs::path custom_pack = s.folder / "textures" / "remaster2";
     const int tex = o[kOptTextures].value;
     set_env_str(L"PS2_TEX_PACK", tex < 2 && fs::is_directory(pack) ? pack.c_str() : nullptr);
+    set_env_str(L"PS2_TEX_PACK_CUSTOM", tex < 2 && fs::is_directory(custom_pack) ? custom_pack.c_str() : nullptr);
     set_env_str(L"PS2_TEX_PACK_MODE", tex == 1 ? L"pure" : nullptr);
     set_env_str(L"PS2_TEX_OVERRIDES", nullptr);
 
@@ -289,10 +299,10 @@ void draw_banner(State &s, HDC hdc, std::uint32_t *pixels) {
     fill_rect(hdc, {0, kBannerH - 2, kClientW, kBannerH}, kGoldDark);
 
     SetBkMode(hdc, TRANSPARENT);
-    text(hdc, s.f_title, RGB(0, 0, 0), L"SPARTAN: TOTAL WARRIOR", {kMargin + 2, 130, kClientW, 180}, DT_LEFT | DT_SINGLELINE);
-    text(hdc, s.f_title, kGoldLight, L"SPARTAN: TOTAL WARRIOR", {kMargin, 128, kClientW, 178}, DT_LEFT | DT_SINGLELINE);
-    text(hdc, s.f_sub, kText, L"PORT NATIVO PARA PC   ·   PT-BR   ·   TEXTURAS HD   ·   16:9 REAL   ·   60 FPS",
-         {kMargin + 2, 182, kClientW, 206}, DT_LEFT | DT_SINGLELINE);
+    text(hdc, s.f_title, RGB(0, 0, 0), L"TOTAL SPARTAN 2", {kMargin + 2, 122, kClientW, 174}, DT_LEFT | DT_SINGLELINE);
+    text(hdc, s.f_title, kGoldLight, L"TOTAL SPARTAN 2", {kMargin, 120, kClientW, 172}, DT_LEFT | DT_SINGLELINE);
+    text(hdc, s.f_sub, kText, L"REMASTER 2.0   ·   PT-BR   ·   16:9 REAL   ·   ACES FILMIC   ·   TEXTURAS 4×   ·   60 FPS",
+         {kMargin + 2, 176, kClientW, 200}, DT_LEFT | DT_SINGLELINE);
 }
 
 void draw_card(State &s, HDC hdc, int column, const wchar_t *title) {
@@ -349,7 +359,7 @@ void paint(State &s, HDC target) {
 
     draw_banner(s, hdc, static_cast<std::uint32_t *>(bits));
     draw_card(s, hdc, 0, L"VÍDEO E ÁUDIO");
-    draw_card(s, hdc, 1, L"IMAGEM");
+    draw_card(s, hdc, 1, L"REMASTER 2.0 E IMAGEM");
     draw_button(s, hdc, kBtnControls, L"CONTROLES E ATALHOS");
     draw_button(s, hdc, kBtnSaves, L"PASTA DE SAVES");
     draw_button(s, hdc, kBtnPlay, L"JOGAR  ▶");
@@ -521,7 +531,7 @@ Choice show(const std::string &exe_path) {
     const int sx = (GetSystemMetrics(SM_CXSCREEN) - win_w) / 2;
     const int sy = std::max(0, (GetSystemMetrics(SM_CYSCREEN) - win_h) / 2);
 
-    HWND hwnd = CreateWindowExW(0, cls.lpszClassName, L"Spartan: Total Warrior", style, sx, sy, win_w, win_h, nullptr, nullptr, inst, nullptr);
+    HWND hwnd = CreateWindowExW(0, cls.lpszClassName, L"Total Spartan 2 — Remaster 2.0", style, sx, sy, win_w, win_h, nullptr, nullptr, inst, nullptr);
     if (hwnd) {
         ShowWindow(hwnd, SW_SHOW);
         UpdateWindow(hwnd);

@@ -863,6 +863,16 @@ bool on() {
     return enabled;
 }
 
+bool hide_cutscene_bars() {
+    static const bool enabled = [] {
+        const std::string v = ps2::os::env("PS2_CUTSCENE_BARS");
+        return v == "off" || v == "0";
+    }();
+    return enabled;
+}
+
+bool g_skip_last = false;
+
 bool g_after = false;    // the whole-frame picture of this frame was drawn
 std::uint32_t g_fbp = 0;  // into this frame
 std::int64_t g_run_area = 0;  // pixels covered by the sprites drawn one after the other into g_run_fbp
@@ -898,17 +908,34 @@ bool narrow(const State &s, int needed, Vertex *out) {
     if (prim == 6 && textured && keeps_depth) {
         if (g_run_fbp != fbp) g_run_fbp = fbp, g_run_area = 0;
         g_run_area += static_cast<std::int64_t>(x1 - x0) * (y1 - y0);
-        if (g_run_area >= static_cast<std::int64_t>(width) * height * 99 / 100) {
+        if (g_run_area >= static_cast<std::int64_t>(width) * height) {
             if (log()) std::fprintf(stderr, "[wide-hud] whole-frame picture into fbp %X (scissor %d,%d-%d,%d)\n", fbp * 32, sx0, sy0, sx1, sy1);
             g_after = true;
             g_fbp = fbp;
             g_run_area = 0;
             return false;
         }
+        if (g_after && fbp == g_fbp && (x1 - x0) == 32 && (y1 - y0) == 32 && (x0 & 31) == 0 && (y0 & 31) == 0) return false;
     } else {
         g_run_area = 0;
     }
-    if (!g_after || fbp != g_fbp || x1 - x0 + 1 >= width * 9 / 10) return false;
+    if (!g_after || fbp != g_fbp) return false;
+    // Cutscene letterbox bars (16 untextured 32x56 columns at top/bottom) and column fades:
+    // keep them full-width across 16:9 instead of narrowing to 3/4, or hide dark letterbox bars when PS2_CUTSCENE_BARS=off!
+    g_skip_last = false;
+    if (prim == 6 && !textured && keeps_depth) {
+        const bool is_col_strip = (x1 - x0) == 32 && (x0 & 31) == 0;
+        const bool is_top_bar = y0 <= sy0 + 4 && y1 <= sy0 + 84 && y1 > sy0 + 16;
+        const bool is_bot_bar = y1 >= sy1 - 3 && y0 >= sy1 - 84 && y0 < sy1 - 16;
+        const std::uint32_t rgb = static_cast<std::uint32_t>(s.rgbaq) & 0xFFFFFFu;
+        const bool is_dark = ((rgb & 0xFFu) <= 0x18u) && (((rgb >> 8) & 0xFFu) <= 0x18u) && (((rgb >> 16) & 0xFFu) <= 0x18u);
+        if (is_col_strip && (is_top_bar || is_bot_bar) && is_dark && hide_cutscene_bars()) {
+            g_skip_last = true;
+            return false;
+        }
+        if (is_col_strip || (x1 - x0 + 1 >= width * 9 / 10)) return false;
+    }
+    if (x1 - x0 + 1 >= width * 9 / 10) return false;
     const int anchor = (sx0 + sx1 + 1) / 2;  // in pixels: the HUD keeps the place it has in a 4:3 picture
     if (log())
         std::fprintf(stderr, "[wide-hud] narrow prim %u attr %llX box %d,%d-%d,%d zmsk %u\n", prim, static_cast<unsigned long long>(attr), x0, y0, x1, y1,
@@ -932,11 +959,14 @@ bool narrow(const State &s, int needed, Vertex *out) {
     if (draw) {
         if (!trace::g_any || trace::draw(s, needed)) {
             Vertex narrowed[3];
+            widehud::g_skip_last = false;
             const Vertex *v = widehud::on() && widehud::narrow(s, needed, narrowed) ? narrowed : s.queue;
-            if (cpu_raster()) raster::draw(s, v, needed);
+            if (!widehud::g_skip_last) {
+                if (cpu_raster()) raster::draw(s, v, needed);
 #ifdef PS2_GPU
-            if (gpu_on()) gpu::draw(s, v, needed);
+                if (gpu_on()) gpu::draw(s, v, needed);
 #endif
+            }
         }
         ++g_primitives;
     }

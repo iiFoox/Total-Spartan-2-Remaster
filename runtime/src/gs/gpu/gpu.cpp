@@ -110,9 +110,14 @@ std::uint32_t g_picture_epoch = 0;  // counts what changes the picture without t
 bool g_have_previous = false;
 std::uint32_t g_scale = 1, g_copy_words = 1u << 20, g_field_words = 1u << 19;
 std::uint32_t g_sharp_2d = 1;
-// PS2_COLOR=0..3: the colour grade of the present pass (blit.wgsl, bits 8-9 of its options): off, light, remaster, vivid
+// PS2_COLOR=0..4: colour grade (bits 8-10): off, light, remaster, vivid, remaster 2.0 ACES
+// PS2_VIGNETTE=1: bit 11; PS2_OVERSCAN_CROP=1: bit 12
 std::uint32_t g_color = 0;
-std::uint32_t blit_options() { return ps2::video_options() | (g_color << 8); }
+bool g_vignette = false;
+bool g_overscan_crop = false;
+std::uint32_t blit_options() {
+    return ps2::video_options() | ((g_color & 7u) << 8) | (g_vignette ? (1u << 11) : 0u) | (g_overscan_crop ? (1u << 12) : 0u);
+}
 
 std::uint32_t field_base(std::uint32_t field) { return g_copy_words + (field & 1u) * g_field_words; }
 
@@ -1845,7 +1850,11 @@ struct PackKeyHash {
 struct PackHash {
     std::uint64_t gens = 0, hash = 0, blocks = 0;  // blocks: the hash of older PCSX2 versions (whole blocks for every format)
 };
-std::unordered_map<PackKey, std::string, PackKeyHash> g_pack_files;
+struct PackFile {
+    std::string path;
+    bool is_custom = false;
+};
+std::unordered_map<PackKey, PackFile, PackKeyHash> g_pack_files;
 std::unordered_map<PackKey, std::uint32_t, PackKeyHash> g_pack_loaded;  // 0xFFFFFFFF: the file could not be used
 std::unordered_map<std::uint64_t, PackHash> g_pack_tex_hash;           // per texture place: its hash and the write counts it was taken at
 std::vector<std::array<std::uint32_t, 512>> g_slot_clut;                // the palette of every palette slot, as the emulation side loaded it
@@ -1855,6 +1864,8 @@ std::uint32_t g_pack_max_shift = 2;                                      // PS2_
 bool g_pack_keep_colours = true;                                         // PS2_TEX_PACK_MODE=pure: the pack's own colours
 std::uint64_t g_pack_hits = 0, g_pack_misses = 0;
 bool g_pack_on = false;
+std::filesystem::path g_pack_dump_dir;                                   // PS2_TEX_PACK_DUMP=<dir>: dumps unique textures named with PCSX2 XXH3-64 keys
+std::unordered_map<PackKey, bool, PackKeyHash> g_pack_dumped;
 std::vector<std::uint32_t> g_slot_serial;  // counts the loads of each palette slot
 
 bool pack_is_palette(std::uint32_t psm) { return psm == PSMT8 || psm == PSMT4 || psm == PSMT8H || psm == PSMT4HL || psm == PSMT4HH; }
@@ -1866,17 +1877,17 @@ void pack_bump(std::uint64_t lo, std::uint64_t hi) {
     for (std::uint64_t b = lo >> 8; b <= (hi - 1) >> 8 && b < (lo >> 8) + 16384; ++b) ++g_block_gen[b & 0x3FFFu];
 }
 
-void init_tex_pack() {
-    g_pack_on = false;
-    const std::string dir = os::env("PS2_TEX_PACK");
+void scan_tex_pack_dir(const std::string &dir, bool is_custom) {
     if (dir.empty() || dir == "0") return;
-    if (os::env("PS2_TEX_PACK_SCALE") == "2") g_pack_max_shift = 1;
-    g_pack_keep_colours = os::env("PS2_TEX_PACK_MODE") != "pure";
     std::error_code ec;
     for (const auto &entry : std::filesystem::directory_iterator(os::path(dir), ec)) {
         if (!entry.is_regular_file(ec)) continue;
         const std::string name = os::utf8(entry.path().filename());
-        if (name.size() < 5 || (name.compare(name.size() - 4, 4, ".dds") != 0 && name.compare(name.size() - 4, 4, ".DDS") != 0)) continue;
+        if (name.size() < 5) continue;
+        const std::string ext = name.substr(name.size() - 4);
+        const bool is_dds = ext == ".dds" || ext == ".DDS";
+        const bool is_png = ext == ".png" || ext == ".PNG";
+        if (!is_dds && !is_png) continue;
         unsigned long long tex = 0, clut = 0;
         unsigned bits = 0;
         char dot = 0;
@@ -1888,17 +1899,39 @@ void init_tex_pack() {
         const std::uint32_t psm = k.bits & 0x3Fu;
         if (!pack_is_palette(psm)) k.clut = 0;
         k.bits &= pack_fmt(psm) && !pack_is_palette(psm) ? ~(1u << 14) : 0x3FFFu;
-        g_pack_files.emplace(k, os::utf8(entry.path()));
+        if (is_custom) g_pack_files[k] = {os::utf8(entry.path()), true};
+        else g_pack_files.emplace(k, PackFile{os::utf8(entry.path()), false});
     }
-    if (g_pack_files.empty()) {
-        std::fprintf(stderr, "[gpu] PS2_TEX_PACK=%s: no PCSX2 replacement textures there\n", dir.c_str());
+}
+
+void init_tex_pack() {
+    g_pack_on = false;
+    g_pack_dump_dir.clear();
+    g_pack_dumped.clear();
+    const std::string dir = os::env("PS2_TEX_PACK");
+    const std::string custom_dir = os::env("PS2_TEX_PACK_CUSTOM");
+    const std::string dump_dir = os::env("PS2_TEX_PACK_DUMP");
+    if (os::env("PS2_TEX_PACK_SCALE") == "2") g_pack_max_shift = 1;
+    g_pack_keep_colours = os::env("PS2_TEX_PACK_MODE") != "pure";
+    scan_tex_pack_dir(dir, false);
+    const std::size_t base_count = g_pack_files.size();
+    scan_tex_pack_dir(custom_dir, true);
+    if (!dump_dir.empty() && dump_dir != "0") {
+        std::error_code ec;
+        g_pack_dump_dir = os::path(dump_dir);
+        std::filesystem::create_directories(g_pack_dump_dir, ec);
+        std::fprintf(stderr, "[gpu] PCSX2-keyed texture dump active -> %s\n", dump_dir.c_str());
+    }
+    if (g_pack_files.empty() && g_pack_dump_dir.empty()) {
+        if (!dir.empty() && dir != "0") std::fprintf(stderr, "[gpu] PS2_TEX_PACK=%s: no PCSX2 replacement textures there\n", dir.c_str());
         return;
     }
     g_pack_on = true;
     g_tex_overrides_enabled = true;
     g_slot_clut.assign(kClutSlots, {});
     g_slot_serial.assign(kClutSlots, 0);
-    std::fprintf(stderr, "[gpu] PCSX2 texture pack: %zu replacement textures from %s (up to %ux)\n", g_pack_files.size(), dir.c_str(), 1u << g_pack_max_shift);
+    std::fprintf(stderr, "[gpu] Remaster 2.0 texture pack: %zu total (%zu base + custom overrides from %s, up to %ux)\n",
+                 g_pack_files.size(), base_count, custom_dir.empty() ? "none" : custom_dir.c_str(), 1u << g_pack_max_shift);
 }
 
 // Decodes the first level of a BC1/BC3 (DXT1/DXT5) or plain 32-bit .dds to texels as the GS holds them (alpha 0x80 is opaque, as in
@@ -2150,13 +2183,17 @@ struct PackJob {
     std::vector<std::uint32_t> orig;  // the game's texture (empty: the pack's own colours)
     std::vector<std::uint32_t> words;  // the result
     std::uint32_t shift = 0;
+    bool is_custom = false;
     bool ok = false;
 };
 
-// Decodes the file and lays it over the game's colours (pack_compose), on a worker thread
+// Decodes the file (.dds or .png) and optionally lays it over the game's colours (pack_compose), on a worker thread
 void pack_work(PackJob &job) {
     std::uint32_t fw = 0, fh = 0;
-    if (!decode_dds(job.path, fw, fh, job.words)) return;
+    const bool is_png = job.path.size() >= 4 &&
+                        (job.path.compare(job.path.size() - 4, 4, ".png") == 0 || job.path.compare(job.path.size() - 4, 4, ".PNG") == 0);
+    const bool decoded = is_png ? decode_png_rgba_ps2(job.path, fw, fh, job.words) : decode_dds(job.path, fw, fh, job.words);
+    if (!decoded) return;
     const std::uint32_t tw = job.tw, th = job.th;
     // the file at 1x, 2x, 4x or 8x; a bigger one than PS2_TEX_PACK_SCALE allows is halved (box filter) until it fits
     while ((fw > tw << g_pack_max_shift || fh > th << g_pack_max_shift) && fw >= 2 * tw && fh >= 2 * th && !(fw & 1) && !(fh & 1)) {
@@ -2175,7 +2212,7 @@ void pack_work(PackJob &job) {
     }
     while (job.shift < 3 && (tw << job.shift) < fw) ++job.shift;
     if (fw != tw << job.shift || fh != th << job.shift || job.words.size() > kDecodedOverrideWords) return;
-    if (!job.orig.empty() && job.shift > 0 && !pack_compose(job.orig, tw, th, job.words, fw, fh)) {
+    if (!job.is_custom && !job.orig.empty() && job.shift > 0 && !pack_compose(job.orig, tw, th, job.words, fw, fh)) {
         if (os::env("PS2_TEX_PACK_LOG") == "1") std::fprintf(stderr, "[tex-pack] refused (not like the original): %s\n", job.path.c_str());
         return;
     }
@@ -2323,6 +2360,24 @@ std::uint32_t resolve_pack_now(const std::uint32_t *w, std::uint32_t tw_log, std
         }
         key.clut = XXH3_64bits(colours, count * 4);
     }
+    if (!g_pack_dump_dir.empty() && g_pack_dumped.emplace(key, true).second) {
+        std::vector<std::uint32_t> raw;
+        pack_original(w, tw, th, raw);
+        if (raw.size() == static_cast<std::size_t>(tw) * th) {
+            // Convert PS2 alpha (0..0x80) to standard 8-bit alpha (0..255) for inspection/redesign
+            for (std::uint32_t &px : raw) {
+                const std::uint32_t a = std::min<std::uint32_t>(255u, ((px >> 24) & 0xFFu) * 2u);
+                px = (px & 0x00FFFFFFu) | (a << 24);
+            }
+            char fname[128];
+            std::snprintf(fname, sizeof fname, "%016llx-%016llx-%08x_%ux%u.rgba",
+                          static_cast<unsigned long long>(key.tex), static_cast<unsigned long long>(key.clut), key.bits, tw, th);
+            if (std::FILE *df = os::open(os::utf8(g_pack_dump_dir / fname), "wb")) {
+                std::fwrite(raw.data(), 4, raw.size(), df);
+                std::fclose(df);
+            }
+        }
+    }
     auto loaded = g_pack_loaded.find(key);
     if (loaded != g_pack_loaded.end() && loaded->second != 0xFFFFFFFDu) return loaded->second == kPackPending ? 0xFFFFFFFFu : loaded->second;
     auto file = g_pack_files.find(key);
@@ -2348,13 +2403,14 @@ std::uint32_t resolve_pack_now(const std::uint32_t *w, std::uint32_t tw_log, std
         }
         return 0xFFFFFFFFu;
     }
-    if (log) std::fprintf(stderr, "[tex-pack] hit %s\n", file->second.c_str());
-    // the file is read, decoded and laid over the game's colours by the workers; the game's own texture is used until it is ready
+    if (log) std::fprintf(stderr, "[tex-pack] hit %s\n", file->second.path.c_str());
+    // the file is read, decoded and laid over the game's colours by the workers; custom remaster2 assets bypass pack_compose
     PackJob job;
     job.key = key;
-    job.path = file->second;
+    job.path = file->second.path;
+    job.is_custom = file->second.is_custom;
     job.tw = tw, job.th = th;
-    if (g_pack_keep_colours) pack_original(w, tw, th, job.orig);
+    if (!job.is_custom && g_pack_keep_colours) pack_original(w, tw, th, job.orig);
     g_pack_loaded[key] = kPackPending;
     pack_jobs().post(std::move(job));
     return 0xFFFFFFFFu;
@@ -4757,7 +4813,9 @@ bool init(Mode m) {
     if (const char *scale = std::getenv("PS2_SCALE")) g_scale = std::clamp<std::uint32_t>(static_cast<std::uint32_t>(std::atoi(scale)), 1u, 6u);
     // PS2_SHARP_2D: how upscaled 2D art (text, icons, menus) is filtered, see SHARP in gs.wgsl: 0 plain bilinear, 1 sharp (the
     // default), 2 sharpest
-    if (const char *color = std::getenv("PS2_COLOR")) g_color = std::clamp<std::uint32_t>(static_cast<std::uint32_t>(std::atoi(color)), 0u, 3u);
+    if (const char *color = std::getenv("PS2_COLOR")) g_color = std::clamp<std::uint32_t>(static_cast<std::uint32_t>(std::atoi(color)), 0u, 4u);
+    g_vignette = os::env("PS2_VIGNETTE") == "1";
+    g_overscan_crop = os::env("PS2_OVERSCAN_CROP") == "1";
     if (const char *sharp = std::getenv("PS2_SHARP_2D")) g_sharp_2d = std::clamp<std::uint32_t>(static_cast<std::uint32_t>(std::atoi(sharp)), 0u, 2u);
     g_copy_words = (1u << 20) * g_scale * g_scale;
     if (const int tile = std::atoi(os::env("PS2_TILE").c_str()); tile == 4 || tile == 8 || tile == 16) g_tile = tile;

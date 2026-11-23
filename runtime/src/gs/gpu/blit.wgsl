@@ -237,40 +237,76 @@ fn reduced_scene(uv: vec2<f32>) -> vec3<f32> {
     return sum / f32(n.x * n.y);
 }
 
-// Colour grade (bits 8-9 of the options, PS2_COLOR): 0 leaves the picture as the game made it; 1 light, 2 remaster, 3 vivid add
-// saturation, contrast, a deeper black point and a gentle S-curve, against the washed-out grey of the PS2 picture. The sharp looks
-// also sharpen a little more with each step.
-fn color_level() -> u32 { return (blit.options >> 8u) & 3u; }
+// Colour grade (bits 8-10 of options, PS2_COLOR):
+// 0 = Original PS2, 1 = Light, 2 = Remaster, 3 = Vivid, 4 = Remaster 2.0 (ACES Filmic + warm bronze highlights)
+// Bit 11 = PS2_VIGNETTE (subtle cinematic vignette)
+// Bit 12 = PS2_OVERSCAN_CROP (clean 1px left/top/right and 4px bottom crop removing PS2 overscan noise)
+fn color_level() -> u32 { return (blit.options >> 8u) & 7u; }
+fn vignette_on() -> bool { return (blit.options & (1u << 11u)) != 0u; }
+fn overscan_crop_on() -> bool { return (blit.options & (1u << 12u)) != 0u; }
 
 fn sharpness() -> f32 {
     let level = color_level();
+    if (level == 4u) { return 0.28; }
     return select(select(select(SHARPNESS, 0.20, level == 1u), 0.26, level == 2u), 0.30, level == 3u);
 }
 
-fn grade(c0: vec3<f32>) -> vec3<f32> {
+fn aces_filmic(x: vec3<f32>) -> vec3<f32> {
+    let a = 2.51;
+    let b = 0.03;
+    let c = 2.43;
+    let d = 0.59;
+    let e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn grade(c0: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
     let c = clamp(c0, vec3<f32>(0.0), vec3<f32>(1.0));
     let level = color_level();
-    if (level == 0u) { return c; }
-    // saturation, contrast, curve, black point
-    let p = select(select(vec4<f32>(1.08, 1.04, 0.10, 0.010), vec4<f32>(1.18, 1.08, 0.18, 0.020), level == 2u),
-                   vec4<f32>(1.30, 1.12, 0.25, 0.030), level == 3u);
-    var g = mix(vec3<f32>(luma(c)), c, p.x);
-    g = (g - p.w) / (1.0 - p.w);
-    g = clamp((g - 0.5) * p.y + 0.5, vec3<f32>(0.0), vec3<f32>(1.0));
-    return mix(g, g * g * (3.0 - 2.0 * g), p.z);
+    var out = c;
+    if (level == 4u) {
+        // Remaster 2.0: linearize -> slight exposure lift & bronze warmth -> ACES filmic -> sRGB -> subtle saturation boost
+        let lin = pow(max(c - vec3<f32>(0.014), vec3<f32>(0.0)) / (1.0 - 0.014), vec3<f32>(2.2));
+        let warm = lin * vec3<f32>(1.05, 1.01, 0.96) * 1.18;
+        let filmic = aces_filmic(warm);
+        let srgb = pow(filmic, vec3<f32>(1.0 / 2.2));
+        out = clamp(mix(vec3<f32>(luma(srgb)), srgb, 1.16), vec3<f32>(0.0), vec3<f32>(1.0));
+    } else if (level > 0u) {
+        // saturation, contrast, curve, black point
+        let p = select(select(vec4<f32>(1.08, 1.04, 0.10, 0.010), vec4<f32>(1.18, 1.08, 0.18, 0.020), level == 2u),
+                       vec4<f32>(1.30, 1.12, 0.25, 0.030), level == 3u);
+        var g = mix(vec3<f32>(luma(c)), c, p.x);
+        g = (g - p.w) / (1.0 - p.w);
+        g = clamp((g - 0.5) * p.y + 0.5, vec3<f32>(0.0), vec3<f32>(1.0));
+        out = mix(g, g * g * (3.0 - 2.0 * g), p.z);
+    }
+    if (vignette_on()) {
+        let d = (uv - vec2<f32>(0.5)) * vec2<f32>(1.18, 1.08);
+        let v = clamp(1.0 - dot(d, d) * 0.32, 0.72, 1.0);
+        out = out * v;
+    }
+    return out;
 }
 
 @fragment
 fn fs(in: VertexOut) -> @location(0) vec4<f32> {
+    var uv = in.uv;
+    if (overscan_crop_on()) {
+        // Crop 1px left/right/top and 4px bottom in PS2 native coordinates to remove overscan edge artifacts
+        let cx = 1.0 / 512.0;
+        let ct = 1.0 / 448.0;
+        let cb = 4.0 / 448.0;
+        uv = vec2<f32>(mix(cx, 1.0 - cx, uv.x), mix(ct, 1.0 - cb, uv.y));
+    }
     var c: vec3<f32>;
     if (blit.width > blit.out_width + blit.out_width / 16u || blit.height > blit.out_height + blit.out_height / 16u) {
-        return vec4<f32>(grade(reduced_scene(in.uv)), 1.0);
+        return vec4<f32>(grade(reduced_scene(uv), in.uv), 1.0);
     }
     if ((blit.options & 4u) != 0u) {
-        c = sharp_scene(in.uv, (blit.options & 1u) != 0u);
+        c = sharp_scene(uv, (blit.options & 1u) != 0u);
     } else {
-        c = scene(in.uv);
-        if ((blit.options & 1u) != 0u) { c = edge_aa(in.uv, c); }
+        c = scene(uv);
+        if ((blit.options & 1u) != 0u) { c = edge_aa(uv, c); }
     }
-    return vec4<f32>(grade(c), 1.0);
+    return vec4<f32>(grade(c, in.uv), 1.0);
 }
